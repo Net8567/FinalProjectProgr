@@ -1,0 +1,53 @@
+erDiagram
+    CATEGORIES ||--o{ PRODUCTS : "has"
+    STORES ||--o{ PRODUCTS : "sells"
+    PRODUCTS ||--o{ REVIEWS : "receives"
+    SENTIMENT_LABELS ||--o{ REVIEWS : "labels"
+    REVIEWS ||--|| REVIEW_TEXTS : "has text"
+    REVIEWS ||--o{ PREDICTIONS : "predicted by models"
+    SENTIMENT_LABELS ||--o{ PREDICTIONS : "predicted label"
+
+    SENTIMENT_LABELS {
+        int label PK
+        text name
+    }
+    CATEGORIES {
+        int category_id PK
+        text name
+    }
+    STORES {
+        int store_id PK
+        text name
+    }
+    PRODUCTS {
+        text parent_asin PK
+        text title
+        int category_id FK
+        int store_id FK
+        real average_rating
+        int rating_number
+        real price
+    }
+    REVIEWS {
+        int review_id PK
+        text parent_asin FK
+        text user_id
+        int rating
+        int label FK
+        text split
+        text review_date
+        int helpful_vote
+        int verified_purchase
+        int text_words
+    }
+    REVIEW_TEXTS {
+        int review_id PK
+        text title
+        text text
+    }
+    PREDICTIONS {
+        int review_id PK
+        text model PK
+        int pred_label FK
+        real confidence
+    }
