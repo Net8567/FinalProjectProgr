@@ -267,7 +267,7 @@ def plot_confusion_matrices(y_true, preds: dict, filename: str = "confusion_matr
     plt.close(fig)
 
 
-def error_analysis(test: pd.DataFrame, pred: np.ndarray, conf: np.ndarray, model_name: str) -> dict:
+def error_analysis(test: pd.DataFrame, pred: np.ndarray, conf: np.ndarray, model_name: str, tag: str = "") -> dict:
     df = test[["review_id", "rating", "label", "text", "text_words", "verified_purchase"]].copy()
     df["pred"], df["confidence"] = pred, conf
     df["error"] = df["pred"] != df["label"]
@@ -289,7 +289,7 @@ def error_analysis(test: pd.DataFrame, pred: np.ndarray, conf: np.ndarray, model
     top["pred_name"] = top["pred"].map(dict(enumerate(LABEL_NAMES)))
     top["text"] = top["text"].map(lambda t: strip_html(t)[:400])
     top[["review_id", "true_name", "pred_name", "rating", "confidence", "text_words", "text"]].to_csv(
-        REPORT_DIR / "error_examples.csv", index=False, encoding="utf-8")
+        REPORT_DIR / f"error_examples{tag}.csv", index=False, encoding="utf-8")
 
     fig, ax = plt.subplots(figsize=(6, 4))
     stars = df.groupby("rating")["error"].mean()
@@ -298,7 +298,7 @@ def error_analysis(test: pd.DataFrame, pred: np.ndarray, conf: np.ndarray, model
     ax.set_ylabel("доля ошибок")
     ax.set_title(f"Ошибки по звёздам: {model_name}", fontsize=10)
     fig.tight_layout()
-    fig.savefig(FIG_DIR / "error_rate_by_stars.png", dpi=150)
+    fig.savefig(FIG_DIR / f"error_rate_by_stars{tag}.png", dpi=150)
     plt.close(fig)
     return summary
 
