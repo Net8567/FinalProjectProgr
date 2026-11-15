@@ -49,10 +49,9 @@ def optimize_meta(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def read_chunks(path: Path, chunksize: int):
-    # dtype=False и convert_dates=False: иначе pandas может превратить asin в числа
-    # и сам разобрать timestamp
+    # dtype=False: иначе pandas может превратить asin в числа; timestamp разбираем сами
     return pd.read_json(path, lines=True, chunksize=chunksize,
-                        compression="infer", dtype=False, convert_dates=False)
+                        compression="infer", dtype=False)
 
 
 def convert_to_parquet(src: Path, out_dir: Path, optimizer, chunksize: int = 200_000) -> dict:
@@ -95,7 +94,9 @@ def benchmark_formats(parquet_dir: Path, n_rows: int = 500_000) -> dict:
         _ = (pd.read_csv(path, usecols=["rating", "parent_asin"]) if fmt == "csv"
              else pd.read_parquet(path, columns=["rating", "parent_asin"]))
         cols_s = time.perf_counter() - t
-        res[fmt] = {"size_mb": round(path.stat().st_size / 1024 ** 2, 1), "write_s": round(write_s, 2), "read_s": round(read_s, 2), "read_2cols_s": round(cols_s, 2)}
+        res[fmt] = {"size_mb": round(path.stat().st_size / 1024 ** 2, 1),
+                    "write_s": round(write_s, 2), "read_s": round(read_s, 2),
+                    "read_2cols_s": round(cols_s, 2)}
     return res
 
 
@@ -108,7 +109,7 @@ def main() -> None:
     meta = convert_to_parquet(meta_file, PARQUET_DIR / "meta", optimize_meta, 50_000)
     formats = benchmark_formats(PARQUET_DIR / "reviews")
     report = {"reviews": reviews, "meta": meta, "formats": formats}
-    (REPORT_DIR / "loading_stats.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    (REPORT_DIR / "loading_stats.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(report, indent=2, ensure_ascii=False))
 
 

@@ -44,12 +44,15 @@ CREATE TABLE reviews (
     rating            INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
     label             INTEGER NOT NULL REFERENCES sentiment_labels(label),
     split             TEXT NOT NULL CHECK (split IN ('train', 'val', 'test')),
-    title             TEXT,
-    text              TEXT NOT NULL,
     review_date       TEXT NOT NULL,
     helpful_vote      INTEGER,
     verified_purchase INTEGER,
     text_words        INTEGER
+);
+CREATE TABLE review_texts (
+    review_id INTEGER PRIMARY KEY REFERENCES reviews(review_id),
+    title     TEXT,
+    text      TEXT NOT NULL
 );
 CREATE TABLE predictions (
     review_id  INTEGER NOT NULL REFERENCES reviews(review_id),
@@ -61,7 +64,7 @@ CREATE TABLE predictions (
 """
 
 INDEXES = """
-CREATE INDEX idx_reviews_product ON reviews(parent_asin);
+CREATE INDEX idx_reviews_product ON reviews(parent_asin, rating, label, review_date);
 CREATE INDEX idx_reviews_date    ON reviews(review_date);
 CREATE INDEX idx_reviews_label   ON reviews(label);
 CREATE INDEX idx_reviews_split   ON reviews(split);
@@ -70,9 +73,15 @@ CREATE INDEX idx_products_store  ON products(store_id);
 """
 
 
+def _clean_name(values: pd.Series) -> pd.Series:
+    """Пропуски и пустые строки -> 'Unknown'."""
+    values = values.fillna("Unknown").str.strip()
+    return values.mask(values == "", "Unknown")
+
+
 def _lookup_table(values: pd.Series) -> pd.DataFrame:
     """Таблица-справочник: уникальные значения -> целочисленные id."""
-    names = sorted(values.fillna("Unknown").unique())
+    names = sorted(values.unique())
     return pd.DataFrame({"id": range(1, len(names) + 1), "name": names})
 
 
@@ -90,8 +99,8 @@ def build_database(db_path: Path = DB_PATH) -> dict:
     con.executemany("INSERT INTO sentiment_labels VALUES (?, ?)",
                     [(0, "negative"), (1, "neutral"), (2, "positive")])
 
-    meta["main_category"] = meta["main_category"].fillna("Unknown")
-    meta["store"] = meta["store"].fillna("Unknown")
+    meta["main_category"] = _clean_name(meta["main_category"])
+    meta["store"] = _clean_name(meta["store"])
     cats, stores = _lookup_table(meta["main_category"]), _lookup_table(meta["store"])
     cats.rename(columns={"id": "category_id"}).to_sql("categories", con, if_exists="append", index=False)
     stores.rename(columns={"id": "store_id"}).to_sql("stores", con, if_exists="append", index=False)
@@ -114,18 +123,20 @@ def build_database(db_path: Path = DB_PATH) -> dict:
         "review_id": reviews["review_id"], "parent_asin": reviews["parent_asin"],
         "user_id": reviews["user_id"], "rating": reviews["rating"].astype("int64"),
         "label": reviews["label"].astype("int64"), "split": reviews["split"],
-        "title": reviews["title"], "text": reviews["text"],
         "review_date": reviews["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S"),
         "helpful_vote": reviews["helpful_vote"].astype("int64"),
         "verified_purchase": reviews["verified_purchase"].astype("int64"),
         "text_words": reviews["text_words"].astype("int64"),
     })
     out.to_sql("reviews", con, if_exists="append", index=False, chunksize=50_000)
+    texts = reviews[["review_id", "title", "text"]]
+    texts.to_sql("review_texts", con, if_exists="append", index=False, chunksize=50_000)
 
     con.executescript(INDEXES)  # индексы после загрузки: так быстрее
+    con.execute("ANALYZE")      # статистика для планировщика запросов
     con.commit()
     counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-              for t in ("sentiment_labels", "categories", "stores", "products", "reviews", "predictions")}
+              for t in ("sentiment_labels", "categories", "stores", "products", "reviews", "review_texts", "predictions")}
     counts["reviews_dropped_no_product"] = dropped
     con.close()
     return counts
@@ -140,6 +151,9 @@ def run_all_queries(db_path: Path = DB_PATH) -> list[dict]:
     """Выполняет все запросы, сохраняет результаты в CSV, возвращает время выполнения."""
     SQL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(db_path)
+    con.execute("PRAGMA cache_size = -262144")  # кэш страниц 256 МБ (по умолчанию ~2 МБ)
+    pd.set_option("display.max_colwidth", 50)
+    pd.set_option("display.width", 200)
     timings = []
     for name, (description, _) in QUERIES.items():
         t = time.perf_counter()
@@ -153,7 +167,7 @@ def run_all_queries(db_path: Path = DB_PATH) -> list[dict]:
         df.to_csv(SQL_RESULTS_DIR / f"{name}.csv", index=False)
         timings.append({"query": name, "description": description, "rows": len(df), "seconds": seconds})
         print(f"\n=== {name} ({seconds} c, {len(df)} строк) ===\n{description}")
-        print(df.head(10).to_string(index=False))
+        print(df.head(5).to_string(index=False))
     con.close()
     return timings
 
@@ -167,7 +181,7 @@ def main() -> None:
     timings = run_all_queries()
     report = {"row_counts": counts, "load_seconds": load_seconds,
               "db_size_mb": round(DB_PATH.stat().st_size / 1024 ** 2, 1), "queries": timings}
-    (REPORT_DIR / "sql_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    (REPORT_DIR / "sql_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print("\nРазмер БД, МБ:", report["db_size_mb"])
 
 

@@ -103,18 +103,19 @@ QUERIES = {
         ORDER BY r.verified_purchase DESC, r.label
         """),
     "q08_most_helpful_per_sentiment": (
-        "Топ-5 самых полезных отзывов каждого класса (CTE + ROW_NUMBER)",
+        "Топ-5 самых полезных отзывов каждого класса (CTE + ROW_NUMBER, текст подтягивается JOIN только для победителей)",
         """
         WITH ranked AS (
-            SELECT r.review_id, r.label, r.helpful_vote, p.title AS product,
-                   SUBSTR(r.text, 1, 200) AS text_preview,
+            SELECT r.review_id, r.label, r.helpful_vote, r.parent_asin,
                    ROW_NUMBER() OVER (PARTITION BY r.label ORDER BY r.helpful_vote DESC, r.review_id) AS rn
             FROM reviews r
-            JOIN products p ON p.parent_asin = r.parent_asin
         )
-        SELECT sl.name AS sentiment, k.rn, k.helpful_vote, k.product, k.text_preview
+        SELECT sl.name AS sentiment, k.rn, k.helpful_vote, p.title AS product,
+               SUBSTR(t.text, 1, 200) AS text_preview
         FROM ranked k
         JOIN sentiment_labels sl ON sl.label = k.label
+        JOIN products p ON p.parent_asin = k.parent_asin
+        JOIN review_texts t ON t.review_id = k.review_id
         WHERE k.rn <= 5
         ORDER BY sl.label, k.rn
         """),

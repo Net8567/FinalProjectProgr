@@ -91,7 +91,7 @@ def main() -> None:
     t0 = time.perf_counter()
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(exist_ok=True)
-    total = json.loads((REPORT_DIR / "loading_stats.json").read_text())["reviews"]["rows"]
+    total = json.loads((REPORT_DIR / "loading_stats.json").read_text(encoding="utf-8"))["reviews"]["rows"]
 
     sample, audit = audit_and_sample(total, SAMPLE_SIZE)
     clean, clean_log = clean_sample(sample)
@@ -108,7 +108,7 @@ def main() -> None:
     audit["label_distribution"] = {LABEL_NAMES[k]: int(v) for k, v in data["label"].value_counts().sort_index().items()}
     audit["split_sizes"] = {k: int(v) for k, v in data["split"].value_counts().items()}
     audit["seconds"] = round(time.perf_counter() - t0, 1)
-    (REPORT_DIR / "data_audit.json").write_text(json.dumps(audit, indent=2, ensure_ascii=False))
+    (REPORT_DIR / "data_audit.json").write_text(json.dumps(audit, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(audit, indent=2, ensure_ascii=False))
 
 
