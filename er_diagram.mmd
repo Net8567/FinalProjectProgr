@@ -4,6 +4,7 @@ erDiagram
     PRODUCTS ||--o{ REVIEWS : "receives"
     SENTIMENT_LABELS ||--o{ REVIEWS : "labels"
     REVIEWS ||--|| REVIEW_TEXTS : "has text"
+    SENTIMENT_LABELS ||--o{ KEYWORDS : "characterized by"
     REVIEWS ||--o{ PREDICTIONS : "predicted by models"
     SENTIMENT_LABELS ||--o{ PREDICTIONS : "predicted label"
 
@@ -44,6 +45,14 @@ erDiagram
         int review_id PK
         text title
         text text
+    }
+    KEYWORDS {
+        int label PK
+        text kind PK
+        text keyword PK
+        int ngram_size
+        int count
+        real score
     }
     PREDICTIONS {
         int review_id PK

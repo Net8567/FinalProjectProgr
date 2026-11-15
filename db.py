@@ -54,6 +54,15 @@ CREATE TABLE review_texts (
     title     TEXT,
     text      TEXT NOT NULL
 );
+CREATE TABLE keywords (
+    label       INTEGER NOT NULL REFERENCES sentiment_labels(label),
+    kind        TEXT NOT NULL CHECK (kind IN ('frequent', 'distinctive')),
+    keyword     TEXT NOT NULL,
+    ngram_size  INTEGER NOT NULL,
+    count       INTEGER NOT NULL,
+    score       REAL,
+    PRIMARY KEY (label, kind, keyword)
+);
 CREATE TABLE predictions (
     review_id  INTEGER NOT NULL REFERENCES reviews(review_id),
     model      TEXT NOT NULL,
@@ -136,7 +145,7 @@ def build_database(db_path: Path = DB_PATH) -> dict:
     con.execute("ANALYZE")      # статистика для планировщика запросов
     con.commit()
     counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-              for t in ("sentiment_labels", "categories", "stores", "products", "reviews", "review_texts", "predictions")}
+              for t in ("sentiment_labels", "categories", "stores", "products", "reviews", "review_texts", "keywords", "predictions")}
     counts["reviews_dropped_no_product"] = dropped
     con.close()
     return counts
