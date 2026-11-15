@@ -51,12 +51,17 @@ _STEMMER = SnowballStemmer("english")
 _LEMMATIZER = WordNetLemmatizer()
 
 
-def clean_text(text: str) -> str:
-    """Убирает HTML-теги (<br />), ссылки, HTML-сущности, приводит к нижнему регистру."""
+def strip_html(text: str) -> str:
+    """Убирает HTML-теги (<br />), HTML-сущности и ссылки, сохраняя регистр и пунктуацию
+    (нужно для VADER и эмбеддингов: они используют капс, "!" и т. п.)."""
     text = HTML_TAG.sub(" ", text)
     text = html.unescape(text).replace("\u2019", "'")
-    text = URL.sub(" ", text)
-    return text.lower()
+    return URL.sub(" ", text)
+
+
+def clean_text(text: str) -> str:
+    """strip_html + нижний регистр (для частотных методов)."""
+    return strip_html(text).lower()
 
 
 def tokenize(text: str) -> list[str]:
