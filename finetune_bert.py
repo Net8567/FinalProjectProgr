@@ -4,7 +4,8 @@
 Test используется один раз в конце; лучшая эпоха выбирается по val.
 
 Запуск:  python finetune_bert.py --smoke     (проверка на крошечной выборке, ничего не сохраняет)
-         python finetune_bert.py             (полный прогон: 200 тыс. train, 2 эпохи)
+         python finetune_bert.py             (полный прогон: весь train, до 6 эпох, early stopping)
+         python finetune_bert.py --train-size 200000 --epochs 2 --patience 1   (прежний быстрый вариант)
 Сначала должен быть выполнен models.py (он создаёт отчёты и таблицу predictions).
 """
 import argparse
@@ -26,9 +27,58 @@ COMPARE_WITH = "TF-IDF + LR"
 
 
 # ---------- вспомогательные функции ----------
-def tokenize(tokenizer, texts, max_len: int) -> list:
-    enc = tokenizer([strip_html(t) for t in texts], truncation=True, max_length=max_len)
-    return enc["input_ids"]
+def tokenize(tokenizer, texts, max_len: int, chunk: int = 50_000) -> list:
+    """Токенизация чанками; последовательности хранятся как int32-массивы (экономия RAM)."""
+    texts = list(texts)
+    out = []
+    for start in range(0, len(texts), chunk):
+        enc = tokenizer([strip_html(t) for t in texts[start:start + chunk]], truncation=True, max_length=max_len)
+        out.extend(np.asarray(ids, dtype=np.int32) for ids in enc["input_ids"])
+    return out
+
+
+class EarlyStopper:
+    """Остановка, если F1 на val не улучшается patience эпох подряд (улучшение = больше min_delta)."""
+
+    def __init__(self, patience: int, min_delta: float = 0.0005):
+        self.patience, self.min_delta = patience, min_delta
+        self.best, self.bad_epochs = -1.0, 0
+
+    def update(self, score: float) -> bool:
+        """Возвращает True, если эпоха стала лучшей."""
+        if score > self.best + self.min_delta:
+            self.best, self.bad_epochs = score, 0
+            return True
+        self.bad_epochs += 1
+        return False
+
+    @property
+    def should_stop(self) -> bool:
+        return self.bad_epochs >= self.patience
+
+
+def fit_class_bias(proba: np.ndarray, y: np.ndarray) -> tuple:
+    """Подбирает сдвиги логарифмов вероятностей классов (negative, neutral; positive = 0),
+    максимизирующие F1-macro на val. Модель не переобучается, меняется только порог решения."""
+    logp = np.log(np.clip(proba, 1e-9, 1.0))
+    best_bias, best_f1 = np.zeros(3), macro_f1_fast(y, logp.argmax(axis=1))
+    base_f1 = best_f1
+    for b_neg in np.arange(-1.5, 1.51, 0.1):
+        for b_neu in np.arange(-1.0, 2.01, 0.1):
+            bias = np.array([b_neg, b_neu, 0.0])
+            f1 = macro_f1_fast(y, (logp + bias).argmax(axis=1))
+            if f1 > best_f1:
+                best_bias, best_f1 = bias, f1
+    return best_bias, base_f1, best_f1
+
+
+def apply_bias(proba: np.ndarray, bias: np.ndarray) -> tuple:
+    """Применяет сдвиги; возвращает (класс, уверенность)."""
+    logits = np.log(np.clip(proba, 1e-9, 1.0)) + bias
+    logits -= logits.max(axis=1, keepdims=True)
+    p = np.exp(logits)
+    p /= p.sum(axis=1, keepdims=True)
+    return p.argmax(axis=1), p.max(axis=1)
 
 
 def collate(ids_batch: list, pad_id: int, device: str):
@@ -58,8 +108,8 @@ def predict_proba(model, ids: list, pad_id: int, device: str, batch_size: int = 
     return out
 
 
-def train_model(model, train_ids, y_train, val_ids, y_val, pad_id, device, epochs, batch_size, lr) -> list:
-    """Цикл обучения. После каждой эпохи оценка на val; в конце загружается лучшая эпоха."""
+def train_model(model, train_ids, y_train, val_ids, y_val, pad_id, device, epochs, batch_size, lr, patience) -> list:
+    """Цикл обучения. После каждой эпохи оценка на val; early stopping; в конце загружается лучшая эпоха."""
     import torch
     import torch.nn.functional as F
 
@@ -73,7 +123,8 @@ def train_model(model, train_ids, y_train, val_ids, y_val, pad_id, device, epoch
         optimizer, lambda s: (s + 1) / warmup if s < warmup else max(0.0, (total_steps - s) / max(1, total_steps - warmup)))
 
     rng = np.random.default_rng(SEED)
-    history, best_f1, best_state, step = [], -1.0, None, 0
+    history, best_state, step = [], None, 0
+    stopper = EarlyStopper(patience)
     t0 = time.perf_counter()
     for epoch in range(1, epochs + 1):
         model.train()
@@ -95,14 +146,19 @@ def train_model(model, train_ids, y_train, val_ids, y_val, pad_id, device, epoch
                 elapsed = time.perf_counter() - t0
                 eta = elapsed / step * (total_steps - step)
                 print(f"эпоха {epoch}/{epochs}, шаг {step}/{total_steps}, loss {loss.item():.4f}, "
-                      f"прошло {elapsed / 60:.1f} мин, осталось ~{eta / 60:.1f} мин", flush=True)
+                      f"прошло {elapsed / 60:.1f} мин, до максимума ~{eta / 60:.1f} мин", flush=True)
         val_pred = predict_proba(model, val_ids, pad_id, device).argmax(axis=1)
         f1 = macro_f1_fast(y_val, val_pred)
         history.append({"epoch": epoch, "val_f1_macro": round(f1, 4), "val_accuracy": round(float((val_pred == y_val).mean()), 4)})
         print("val после эпохи:", history[-1], flush=True)
-        if f1 > best_f1:
-            best_f1 = f1
+        if device == "cuda":
+            torch.cuda.empty_cache()  # вернуть драйверу неиспользуемый кэш PyTorch
+        if stopper.update(f1):
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            history[-1]["best_so_far"] = True
+        if stopper.should_stop:
+            print(f"early stopping: val F1 не растёт {patience} эпох подряд, остановка после эпохи {epoch}", flush=True)
+            break
     model.load_state_dict(best_state)
     return history
 
@@ -148,6 +204,11 @@ def load_other_predictions(test: pd.DataFrame, model_name: str):
 
 
 # ---------- основной сценарий ----------
+def make_row(name: str, pred: np.ndarray, y_test: np.ndarray, unseen: np.ndarray, extra: dict) -> dict:
+    return {"model": name, **extra, **evaluate(y_test, pred), "n_unseen_products": int(unseen.sum()),
+            "f1_macro_unseen_products": round(macro_f1_fast(y_test[unseen], pred[unseen]), 4) if unseen.sum() > 50 else None}
+
+
 def main(args) -> None:
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -161,12 +222,18 @@ def main(args) -> None:
     parts = load_data(fast=False)
     full_train, val, test = parts["train"], parts["val"], parts["test"]
     seen_products = set(full_train["parent_asin"])
-    n_train, n_val = (3000, 1000) if args.smoke else (args.train_size, 20_000)
+    if args.smoke:
+        args.epochs, args.patience = 3, 1
+        n_train, n_val = 3000, 1000
+    else:
+        n_train, n_val = (args.train_size or len(full_train)), args.val_size
     train = full_train.sample(min(n_train, len(full_train)), random_state=SEED).reset_index(drop=True)
     val = val.sample(min(n_val, len(val)), random_state=SEED).reset_index(drop=True)
     if args.smoke:
         test = test.sample(2000, random_state=SEED).reset_index(drop=True)
-    print(f"train {len(train):,}, val {len(val):,}, test {len(test):,}, устройство: {device}", flush=True)
+    print(f"train {len(train):,}, val {len(val):,}, test {len(test):,}, устройство: {device}, "
+          f"максимум эпох {args.epochs}, patience {args.patience}", flush=True)
+    name = f"DistilBERT (fine-tuned, {len(train) // 1000}K)"
 
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
     t = time.perf_counter()
@@ -181,46 +248,65 @@ def main(args) -> None:
     y_train, y_val, y_test = (d["label"].to_numpy() for d in (train, val, test))
     with Measure() as m_train:
         history = train_model(model, train_ids, y_train, val_ids, y_val, tokenizer.pad_token_id, device,
-                              args.epochs, args.batch_size, args.lr)
+                              args.epochs, args.batch_size, args.lr, args.patience)
     gpu_peak = round(torch.cuda.max_memory_allocated() / 1024 ** 2) if device == "cuda" else 0
+    gpu_reserved = round(torch.cuda.max_memory_reserved() / 1024 ** 2) if device == "cuda" else 0
+    epochs_run = len(history)
+
+    # калибровка порогов на val (test не используется)
+    val_proba = predict_proba(model, val_ids, tokenizer.pad_token_id, device)
+    bias, val_f1_raw, val_f1_cal = fit_class_bias(val_proba, y_val)
+    print(f"калибровка на val: F1-macro {val_f1_raw:.4f} -> {val_f1_cal:.4f}, сдвиги (neg, neu, pos) = {np.round(bias, 2)}", flush=True)
 
     with Measure() as m_pred:
         proba = predict_proba(model, test_ids, tokenizer.pad_token_id, device)
-    pred, conf = proba.argmax(axis=1), proba.max(axis=1)
+    pred_raw, conf_raw = proba.argmax(axis=1), proba.max(axis=1)
+    pred_cal, conf_cal = apply_bias(proba, bias)
 
     unseen = ~test["parent_asin"].isin(seen_products).to_numpy()
-    row = {"model": MODEL_NAME, "train_rows": len(train), "train_seconds": m_train.seconds,
-           "predict_seconds": m_pred.seconds, "ram_mb": m_train.peak_mb, "gpu_peak_mb": gpu_peak,
-           "device": device, "epochs": args.epochs, **evaluate(y_test, pred),
-           "n_unseen_products": int(unseen.sum()),
-           "f1_macro_unseen_products": round(macro_f1_fast(y_test[unseen], pred[unseen]), 4) if unseen.sum() > 50 else None}
-    print("\nРезультат на test:", json.dumps(row, indent=2, ensure_ascii=False))
+    common = {"train_rows": len(train), "train_seconds": m_train.seconds, "predict_seconds": m_pred.seconds,
+              "ram_mb": m_train.peak_mb, "gpu_peak_mb": gpu_peak, "gpu_reserved_peak_mb": gpu_reserved,
+              "device": device, "epochs": epochs_run}
+    row_raw = make_row(name, pred_raw, y_test, unseen, common)
+    name_cal = name + " + калибровка порогов"
+    row_cal = make_row(name_cal, pred_cal, y_test, unseen, common)
+    print("\nРезультат на test (без калибровки):", json.dumps(row_raw, indent=2, ensure_ascii=False))
+    print("\nРезультат на test (с калибровкой):", json.dumps(row_cal, indent=2, ensure_ascii=False))
 
     if args.smoke:
         print("\n--smoke: проверка прошла, отчёты и модель НЕ сохранялись")
         return
 
-    # сохранение: модель, предсказания, общая таблица, графики, error analysis
     save_dir = MODEL_DIR / "distilbert_sentiment"
     model.save_pretrained(save_dir)
     tokenizer.save_pretrained(save_dir)
-    n_saved = save_predictions_for_model(test, pred, conf, MODEL_NAME)
-    merged = merge_into_reports(row)
+    (save_dir / "calibration.json").write_text(json.dumps({"bias_neg_neu_pos": [float(b) for b in bias]}), encoding="utf-8")
+    n_saved = save_predictions_for_model(test, pred_raw, conf_raw, name) + \
+        save_predictions_for_model(test, pred_cal, conf_cal, name_cal)
+    merged = merge_into_reports(row_raw) and merge_into_reports(row_cal)
 
-    compare = {MODEL_NAME: pred}
+    compare = {name: pred_raw, name_cal: pred_cal}
     other = load_other_predictions(test, COMPARE_WITH)
     if other is not None:
-        compare = {COMPARE_WITH: other, MODEL_NAME: pred}
+        compare = {COMPARE_WITH: other, **compare}
     plot_confusion_matrices(y_test, compare, "confusion_distilbert_vs_tfidf.png")
-    analysis = error_analysis(test, pred, conf, MODEL_NAME, tag="_distilbert")
+    final_name, final_pred, final_conf = ((name_cal, pred_cal, conf_cal) if val_f1_cal >= val_f1_raw
+                                          else (name, pred_raw, conf_raw))
+    analysis = error_analysis(test, final_pred, final_conf, final_name, tag="_distilbert")
 
-    report = {"base_model": BASE_MODEL, "hyperparameters": {"train_rows": len(train), "epochs": args.epochs,
-              "batch_size": args.batch_size, "learning_rate": args.lr, "max_len": args.max_len,
-              "precision": "bf16 autocast" if device == "cuda" else "fp32",
-              "loss": "cross-entropy с весами классов (корень из обратной частоты)"},
-              "val_history": history, "result": row, "error_analysis": analysis,
-              "predictions_saved_to_db": n_saved, "merged_into_model_report": merged,
-              "train_throughput_docs_per_sec": round(len(train) * args.epochs / max(m_train.seconds, 1e-9))}
+    report = {"base_model": BASE_MODEL,
+              "hyperparameters": {"train_rows": len(train), "val_rows": len(val), "max_epochs": args.epochs,
+                                  "epochs_run": epochs_run, "patience": args.patience, "batch_size": args.batch_size,
+                                  "learning_rate": args.lr, "max_len": args.max_len,
+                                  "precision": "bf16 autocast" if device == "cuda" else "fp32",
+                                  "loss": "cross-entropy с весами классов (корень из обратной частоты)",
+                                  "lr_schedule": "линейный warmup 6% и линейный спад до нуля на максимум эпох"},
+              "val_history": history,
+              "calibration": {"bias_neg_neu_pos": [float(b) for b in bias],
+                              "val_f1_macro_before": round(val_f1_raw, 4), "val_f1_macro_after": round(val_f1_cal, 4)},
+              "result_raw": row_raw, "result_calibrated": row_cal, "error_analysis_model": final_name,
+              "error_analysis": analysis, "predictions_saved_to_db": n_saved, "merged_into_model_report": merged,
+              "train_throughput_docs_per_sec": round(len(train) * epochs_run / max(m_train.seconds, 1e-9))}
     (REPORT_DIR / "bert_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print("\nМодель сохранена в", save_dir)
     print(json.dumps(analysis, indent=2, ensure_ascii=False))
@@ -229,8 +315,10 @@ def main(args) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--smoke", action="store_true", help="быстрая проверка, ничего не сохраняет")
-    parser.add_argument("--train-size", type=int, default=200_000)
-    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--train-size", type=int, default=0, help="0 = весь train (722 тыс.)")
+    parser.add_argument("--val-size", type=int, default=30_000)
+    parser.add_argument("--epochs", type=int, default=6, help="максимум эпох")
+    parser.add_argument("--patience", type=int, default=2, help="early stopping: эпох без улучшения val F1")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=3e-5)
     parser.add_argument("--max-len", type=int, default=128)
