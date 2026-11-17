@@ -9,9 +9,9 @@ The project compares a lexicon baseline (VADER), sparse features with logistic r
 frozen sentence embeddings (MiniLM) and a fine-tuned transformer (DistilBERT), stores the corpus and results in
 SQLite, answers analytical questions with 13 SQL queries and provides a Streamlit application.
 
-* Code: [[GitHub repository URL]]
-* Report: `Final_Report.docx` [[link or file]]
-* Presentation: [[link or file]]
+* Code: https://github.com/Net8567/FinalProjectProgr
+* Report: `Project_Report_Final.pdf`
+* Presentation: _Customer_Review_Sentiment_Presentation_.pdf
 
 ## Results
 
@@ -69,8 +69,8 @@ Folders created by the pipeline (not stored in Git): `data/` (raw data, Parquet,
 ## Installation
 
 ```powershell
-git clone [[GitHub repository URL]]
-cd [[repository folder]]
+git clone https://github.com/Net8567/FinalProjectProgr
+cd FinalProjectProgr
 python -m venv .venv
 .venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
 ```
@@ -142,7 +142,7 @@ Opens `http://localhost:8501` with three pages:
 * **Models**: results table, confusion matrices, validation curve, error examples.
 
 The application needs `data/reviews.db`, `reports/` and the models from `models/` (created by the steps `models` and
-`bert`). Trained models are not stored in Git because of their size: [[link to the trained models, if shared]].
+`bert`). Trained models are not stored in Git because of their size.
 
 ## Data
 
@@ -153,12 +153,3 @@ of use.
 > Hou, Y., Li, J., He, Z., Yan, A., Chen, X., McAuley, J. (2024). *Bridging Language and Items for Retrieval and
 > Recommendation.* arXiv:2403.03952.
 
-## Team
-
-| Member | Area |
-|---|---|
-| [[Member 1 name, ID]] | Data engineering, database and SQL |
-| [[Member 2 name, ID]] | Text analytics and classical models |
-| [[Member 3 name, ID]] | Deep learning, application and documentation |
-
-[[Adjust to the real division of work, as in the report.]]
