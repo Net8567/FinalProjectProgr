@@ -153,4 +153,52 @@ QUERIES = {
         GROUP BY r.split, r.label
         ORDER BY r.split, r.label
         """),
+    "q11_model_vs_stars": (
+        "Качество основной модели по звёздам: точность и структура предсказаний (JOIN predictions x reviews, GROUP BY)",
+        """
+        SELECT r.rating, COUNT(*) AS n_reviews,
+               ROUND(100.0 * SUM(p.pred_label = r.label) / COUNT(*), 2) AS accuracy_pct,
+               ROUND(100.0 * SUM(p.pred_label = 0) / COUNT(*), 1) AS pred_negative_pct,
+               ROUND(100.0 * SUM(p.pred_label = 1) / COUNT(*), 1) AS pred_neutral_pct,
+               ROUND(100.0 * SUM(p.pred_label = 2) / COUNT(*), 1) AS pred_positive_pct
+        FROM predictions p
+        JOIN reviews r ON r.review_id = p.review_id
+        WHERE p.model = 'DistilBERT (fine-tuned, 721K)'
+        GROUP BY r.rating
+        ORDER BY r.rating
+        """),
+    "q12_hardest_products": (
+        "Товары, на которых модель ошибается чаще всего (CTE + RANK, минимум 15 тестовых отзывов)",
+        """
+        WITH per_product AS (
+            SELECT r.parent_asin, COUNT(*) AS n_test_reviews, SUM(p.pred_label <> r.label) AS errors
+            FROM predictions p
+            JOIN reviews r ON r.review_id = p.review_id
+            WHERE p.model = 'DistilBERT (fine-tuned, 721K)'
+            GROUP BY r.parent_asin
+            HAVING COUNT(*) >= 15
+        )
+        SELECT pr.title, pp.n_test_reviews, pp.errors,
+               ROUND(100.0 * pp.errors / pp.n_test_reviews, 1) AS error_pct,
+               RANK() OVER (ORDER BY 1.0 * pp.errors / pp.n_test_reviews DESC, pp.n_test_reviews DESC) AS rnk
+        FROM per_product pp
+        JOIN products pr ON pr.parent_asin = pp.parent_asin
+        ORDER BY rnk
+        LIMIT 15
+        """),
+    "q13_top_bigrams_per_class": (
+        "Топ-10 отличительных биграмм каждого класса из таблицы keywords (CTE + ROW_NUMBER)",
+        """
+        WITH ranked AS (
+            SELECT label, keyword, count, score,
+                   ROW_NUMBER() OVER (PARTITION BY label ORDER BY score DESC) AS rn
+            FROM keywords
+            WHERE kind = 'distinctive' AND ngram_size = 2
+        )
+        SELECT sl.name AS sentiment, k.rn, k.keyword, k.count, ROUND(k.score, 2) AS log_odds
+        FROM ranked k
+        JOIN sentiment_labels sl ON sl.label = k.label
+        WHERE k.rn <= 10
+        ORDER BY sl.label, k.rn
+        """),
 }

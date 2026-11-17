@@ -181,12 +181,20 @@ def run_all_queries(db_path: Path = DB_PATH) -> list[dict]:
     return timings
 
 
-def main() -> None:
+TABLES = ("sentiment_labels", "categories", "stores", "products", "reviews", "review_texts", "keywords", "predictions")
+
+
+def main(queries_only: bool = False) -> None:
     REPORT_DIR.mkdir(exist_ok=True)
     t = time.perf_counter()
-    counts = build_database()
+    if queries_only:  # БД уже есть: predictions и keywords НЕ пересоздаются
+        con = sqlite3.connect(DB_PATH)
+        counts = {name: con.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0] for name in TABLES}
+        con.close()
+    else:
+        counts = build_database()
     load_seconds = round(time.perf_counter() - t, 1)
-    print("Загружено строк:", counts, f"за {load_seconds} c")
+    print("Строк в таблицах:", counts, f"({load_seconds} c)")
     timings = run_all_queries()
     report = {"row_counts": counts, "load_seconds": load_seconds,
               "db_size_mb": round(DB_PATH.stat().st_size / 1024 ** 2, 1), "queries": timings}
@@ -195,4 +203,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    main(queries_only="--queries-only" in sys.argv)
